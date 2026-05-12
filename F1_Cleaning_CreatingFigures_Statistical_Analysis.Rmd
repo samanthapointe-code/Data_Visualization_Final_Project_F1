@@ -1,0 +1,501 @@
+---
+title: "Final_DataViz_RMarkdown_F1"
+output: html_document
+date: "2026-05-12"
+---
+
+```{r setup}
+# Load packages
+library(tidyverse)
+library(readxl)
+library(lme4)
+library(lmerTest)
+library(broom)
+library(scales)
+```
+```{r}
+#Loading in the data
+race_results <- read_excel("C:/Users/Saman/Downloads/f1_race_results_2020_2025.xlsx",sheet = "Race_Results") 
+
+weather_data <- read_excel("C:/Users/Saman/Downloads/f1_race_results_2020_2025.xlsx",sheet = "Weather_Per_Race")
+
+names(race_results)
+names(weather_data)
+
+glimpse(race_results)
+glimpse(weather_data)
+```
+```{r}
+#Data Cleaning - race_results
+#Need to ensure that everything is being read correct as factors, numeric, or characters and make sure you don't get any weirdness with the finishes and the places they finished in
+race_results <- race_results %>%
+  mutate(Year = as.factor(Year),
+  Points = as.numeric(Points),
+  Win = ifelse(Finish_Position == "1", 1, 0),
+  FastestLap = ifelse(Fastest_Lap_Rank == "1",1,0),
+  FinishedRace = ifelse(str_detect(Status, "Finished|\\+1 Lap|\\+2 Laps"),1,0),
+  DNF = ifelse(FinishedRace == 1, 0, 1)
+  )
+```
+```{r}
+#Data Cleaning - waether_data
+#Need to ensure that everything is being read correct as factors, numeric, or characters and make sure you don't get any weirdness with the wind, no wind
+weather_data <- weather_data %>%
+  mutate(Year = as.factor(Year),
+  Weather_Wind_NoWind = factor(
+  Weather_Wind_NoWind,levels = c("No Wind","Low Wind","High Wind")
+  )
+  )
+```
+```{r}
+#Need to merge the weather data with the race results to make it easier to work with
+combined_data <- race_results %>%
+  left_join(weather_data,by = c("Year","Grand_Prix")
+  )
+```
+```{r}
+#Data Checking
+glimpse(combined_data)
+
+summary(combined_data$Weather_Wind_NoWind)
+
+tail(combined_data)
+```
+
+```{r}
+#Data Exploration
+#should be the same as how much is in the excel
+summary(race_results) 
+
+race_results %>%
+  count(Year)
+
+race_results %>%
+  count(Weather_Wind_NoWind)
+
+race_results %>%
+  count(Driver, sort = TRUE)
+```
+```{r}
+#Driver Performances
+driver_summary <- combined_data %>%
+  group_by(Driver.x) %>%
+  summarise(
+    Races = n(),
+    TotalPoints = sum(Points.x, na.rm = TRUE),
+    MeanPoints = mean(Points.x, na.rm = TRUE),
+    Wins = sum(Win, na.rm = TRUE),
+    FastestLaps = sum(FastestLap, na.rm = TRUE),
+    DNFs = sum(DNF, na.rm = TRUE),
+    FinishRate = mean(FinishedRace, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(TotalPoints))
+
+driver_summary
+```
+#A mixed effects model was used to test whether race points differed among drivers while accounting for repeated observations across seasons. Driver was treated as a fixed effect and year was included as a random effect.
+```{r}
+#Do drivers differ in points
+points_model <- lmer(
+  Points.x ~ Driver.x + (1 | Year),
+  data = combined_data
+)
+
+summary(points_model)
+anova(points_model)
+```
+#Reliability Index
+##The reliability index was calculated using standardized values of total points, mean points per race, wins, fastest laps, finish rate, and DNFs. Positive performance variables increased the reliability score, while DNFs decreased the score. Penalties were not included in this index so that the metric focused on fantasy-relevant race performance and consistency.
+```{r}
+reliability_index <- combined_data %>%
+  group_by(Driver.x) %>%
+  summarise(
+    Races = n(),
+    TotalPoints = sum(Points.x, na.rm = TRUE),
+    MeanPoints = mean(Points.x, na.rm = TRUE),
+    Wins = sum(Win, na.rm = TRUE),
+    FastestLaps = sum(FastestLap, na.rm = TRUE),
+    DNFs = sum(DNF, na.rm = TRUE),
+    FinishRate = mean(FinishedRace, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ReliabilityScore =
+      scale(TotalPoints)[,1] +
+      scale(MeanPoints)[,1] +
+      scale(Wins)[,1] +
+      scale(FastestLaps)[,1] +
+      scale(FinishRate)[,1] -
+      scale(DNFs)[,1]
+  ) %>%
+  arrange(desc(ReliabilityScore))
+
+reliability_index
+```
+```{r}
+#Creating a matrix for the visualization
+reliability_index <- reliability_index %>%
+  mutate(
+    Driver = reorder(Driver.x, ReliabilityScore)
+  )
+```
+
+
+```{r}
+#Creating the visualization
+reliability_plot <- ggplot(
+  reliability_index,
+  aes(x = ReliabilityScore, y = Driver)
+) +
+  geom_segment(
+    aes(
+      x = 0,
+      xend = ReliabilityScore,
+      y = Driver,
+      yend = Driver
+    ),
+    linewidth = 1,
+    color = "grey70"
+  ) +
+  geom_point(
+    size = 3.5,
+    color = "darkblue"
+  ) +
+  geom_text(
+    aes(label = round(ReliabilityScore, 2)),
+    hjust = -0.3,
+    size = 3
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "black"
+  ) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Formula 1 Driver Reliability Index, 2020–2025",
+    subtitle = "Higher values indicate stronger fantasy-relevant reliability",
+    x = "Reliability Score",
+    y = "Driver"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
+reliability_plot
+```
+
+
+```{r}
+#saving the plot with specific size requirements
+ggsave(
+  "C:/Users/Saman/Downloads/reliability_plot.png",
+  reliability_plot,
+  width = 8,
+  height = 16,
+  dpi = 600
+)
+```
+#Fastest Lap and Race Victory
+##A logistic regression was used to test whether achieving fastest lap predicted whether a driver won the race. A chi-square test was also used to test whether fastest lap status and winning were statistically associated.
+```{r}
+#Fastest lap model
+fastlap_win_model <- glm(
+  Win ~ FastestLap,
+  data = combined_data,
+  family = "binomial"
+)
+
+summary(fastlap_win_model)
+
+exp(coef(fastlap_win_model))
+```
+```{r}
+#Need to combine the fastest lap statistcis with the winning stats and then run a chisquare test on it
+fastlap_table <- table(
+  combined_data$FastestLap,
+  combined_data$Win
+)
+
+fastlap_table
+
+fastlap_chisq <- chisq.test(fastlap_table)
+fastlap_chisq
+```
+```{r}
+#making the matrix and the visualization for this
+fastlap_plot_data <- combined_data %>%
+  mutate(
+    WinLabel = ifelse(Win == 1, "Won Race", "Did Not Win"),
+    FastestLapLabel = ifelse(FastestLap == 1, "Fastest Lap", "No Fastest Lap")
+  ) %>%
+  group_by(FastestLapLabel, WinLabel) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(FastestLapLabel) %>%
+  mutate(Percent = n / sum(n))
+
+#Visualization
+fastlap_plot <- ggplot(
+  fastlap_plot_data,
+  aes(x = FastestLapLabel, y = Percent, fill = WinLabel)
+) +
+  geom_col(
+    color = "black",
+    width = 0.65
+  ) +
+  geom_text(
+    aes(label = percent(Percent, accuracy = 0.1)),
+    position = position_stack(vjust = 0.5),
+    size = 5,
+    fontface = "bold"
+  ) +
+  scale_y_continuous(
+    labels = percent_format(),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Won Race" = "darkblue",
+      "Did Not Win" = "grey75"
+    )
+  ) +
+  theme_classic(base_size = 15) +
+  labs(
+    title = "Relationship Between Fastest Lap and Race Victory",
+    x = NULL,
+    y = "Percentage of Drivers",
+    fill = NULL
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title = element_text(face = "bold"),
+    legend.position = "top"
+  )
+
+fastlap_plot
+```
+
+
+```{r}
+#Saving the plot with specific settings
+ggsave(
+  "C:/Users/Saman/Downloads/fastest_lap_vs_winning.png",
+  fastlap_plot,
+  width = 8,
+  height = 6,
+  dpi = 600
+)
+```
+#Wind Condition and Driver Performance
+##A mixed effects model was used to test whether driver performance differed across wind conditions. Driver, wind condition, and their interaction were included as fixed effects, while year was included as a random effect. The interaction term tested whether drivers responded differently to wind conditions.
+```{r}
+#Need to filter the category becasue there are na's in the data and you dont want o include them 
+wind_summary <- combined_data %>%
+  filter(!is.na(Weather_Wind_NoWind.y)) %>%
+  group_by(Driver.x, Weather_Wind_NoWind.y) %>%
+  summarise(
+    Races = n(),
+    MeanPoints = mean(Points.x, na.rm = TRUE),
+    SE = sd(Points.x, na.rm = TRUE) / sqrt(n()),
+    Wins = sum(Win, na.rm = TRUE),
+    DNFs = sum(DNF, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+wind_summary
+```
+```{r}
+#Model creation and looking at the values
+wind_model <- lmer(
+  Points.x ~ Driver.x * Weather_Wind_NoWind.y + (1 | Year),
+  data = combined_data
+)
+
+summary(wind_model)
+anova(wind_model)
+```
+```{r}
+#Creating a visualization to look at how each driver does with respect to wind - heat map
+wind_heatmap <- ggplot(
+  wind_summary,
+  aes(
+    x = Weather_Wind_NoWind.y,
+    y = reorder(Driver.x, MeanPoints),
+    fill = MeanPoints
+  )
+) +
+  geom_tile(
+    color = "white",
+    linewidth = 0.5
+  ) +
+  scale_fill_gradient(
+    low = "lightblue",
+    high = "darkred"
+  ) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Mean Driver Points Across Wind Conditions",
+    subtitle = "Higher values indicate stronger performance within each wind category",
+    x = "Wind Condition",
+    y = "Driver",
+    fill = "Mean Points"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
+wind_heatmap
+```
+
+
+```{r}
+#saving the image with different image settings
+ggsave(
+  "C:/Users/Saman/Downloads/wind_heatmap.png",
+  wind_heatmap,
+  width = 8,
+  height = 12,
+  dpi = 600
+)
+```
+#Wind Adaptability Score
+##Wind adaptability was calculated as the difference between mean points in no wind and high wind conditions. Smaller values indicate less performance decline under high wind conditions.
+```{r}
+#Creating the matrix
+wind_adaptability <- wind_summary %>%
+  select(Driver.x, Weather_Wind_NoWind.y, MeanPoints) %>%
+  pivot_wider(names_from = Weather_Wind_NoWind.y,
+              values_from = MeanPoints) %>%
+  mutate(WindDropoff = `No Wind` - `High Wind`) %>%
+  arrange(WindDropoff)
+
+wind_adaptability
+```
+```{r}
+#Visualization
+wind_adaptability_plot <- ggplot(
+  wind_adaptability,
+  aes(
+    x = WindDropoff,
+    y = reorder(Driver.x, WindDropoff)
+  )
+) +
+  geom_segment(
+    aes(
+      x = 0,
+      xend = WindDropoff,
+      y = Driver.x,
+      yend = Driver.x
+    ),
+    color = "grey70",
+    linewidth = 1
+  ) +
+  geom_point(
+    size = 3.5,
+    color = "darkred"
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "black"
+  ) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Driver Wind Adaptability Score",
+    subtitle = "Smaller values indicate less performance decline in high wind",
+    x = "Point Drop-Off: No Wind - High Wind",
+    y = "Driver"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
+wind_adaptability_plot
+```
+
+
+```{r}
+#Saving image with different settings
+ggsave(
+  "C:/Users/Saman/Downloads/wind_adaptability_plot.png",
+  wind_adaptability_plot,
+  width = 8,
+  height = 12,
+  dpi = 600
+)
+```
+#Constructor Performance
+```{r}
+#taking from the combined data set, you need to only look at the constructors and the points they got as well as if there drivers were winning and not finishing
+constructor_summary <- combined_data %>%
+  group_by(Constructor.x) %>%
+  summarise(
+    Races = n(),
+    TotalPoints = sum(Points.x, na.rm = TRUE),
+    MeanPoints = mean(Points.x, na.rm = TRUE),
+    Wins = sum(Win, na.rm = TRUE),
+    DNFs = sum(DNF, na.rm = TRUE),
+    FinishRate = mean(FinishedRace, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(TotalPoints))
+
+constructor_summary
+```
+```{r}
+#Visualization
+constructor_plot <- ggplot(
+  constructor_summary,
+  aes(
+    x = TotalPoints,
+    y = reorder(Constructor.x, TotalPoints)
+  )
+) +
+  geom_col(
+    fill = "maroon",
+    color = "black"
+  ) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Constructor Total Points, 2020–2025",
+    x = "Total Points",
+    y = "Constructor"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
+constructor_plot
+```
+
+
+```{r}
+#Saving them with specific settings
+ggsave(
+  "C:/Users/Saman/Downloads/constructor_points.png",
+  constructor_plot,
+  width = 8,
+  height = 6,
+  dpi = 600
+)
+```
+
+#Final Reflections
+##1. My rankings of my visualizations go in this order: formula one driver reliability index, Driver wind adaptibility score, Constructor Total points, Mean driver points across weather condistions, and Relationship between fastest lap and race victory
+##2. The visualization that I was the most pleased with creating was the wind heatmap because it made it easy to compare driver performance across environmental categories. 
+##3. Yes I did have some difficulties when getting the wind data. Race result data were available from open-source repositories, but weather and wind data were not available as one complete dataset. So, I had to go to blog posts and was only able to get the data from 2022-2025 unfortunetly. 
+##4. My project did evolve over the course of completing it. It began as a general Formula 1 fantasy performance analysis. It evolved to focus more specifically on reliability, fastest lap performance, and wind adaptability because these variables were measurable and directly relevant to fantasy team decisions.
+##5. Some challenges that I incountered while I was cleaning the data included cleaning race result columns, matching weather categories to races, and choosing statistical tests appropriate for repeated observations across seasons. I resolved these issues by keeping weather data in a separate sheet, merging the data by year and Grand Prix, and using mixed effects models to account for repeated yearly data.
+##6. If I had more time for this project, I would add qualifying performance, pit stop strategy, tire strategy, penalties, and actual race-day weather measurements instead of broader wind categories.
+##7. Yes. I am happy with the final project because it combines sports analytics, statistical modeling, and data visualization in a way that directly answers fantasy Formula 1 questions and it was pretty fun to look into the data. 
+##8. Yes, you can use my project in future classes but please keep my name redacted.
+##9. I would advise future students to choose a project with accessible data, clean their dataset early (which was a very rough part of mine), and focus on a few strong research questions instead of trying to analyze too many variables (which I tried to do initially).
+
